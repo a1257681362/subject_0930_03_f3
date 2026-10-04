@@ -8,6 +8,7 @@ import com.evops.dto.StageRequest;
 import com.evops.entity.RepairAcceptance;
 import com.evops.entity.RepairProject;
 import com.evops.entity.RepairStage;
+import com.evops.service.MaterialService;
 import com.evops.service.RepairService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -29,9 +30,12 @@ import java.util.Map;
 public class RepairController {
 
     private final RepairService repairService;
+    private final MaterialService materialService;
 
-    public RepairController(RepairService repairService) {
+    public RepairController(RepairService repairService,
+                            MaterialService materialService) {
         this.repairService = repairService;
+        this.materialService = materialService;
     }
 
     /** 立项：委托人、修复方案；项目编号重复会被拒绝 */
@@ -73,7 +77,7 @@ public class RepairController {
         return ApiResponse.ok(repairService.cancel(id, request.getReason()));
     }
 
-    /** 项目详情：项目 + 阶段结果 + 验收记录 */
+    /** 项目详情：项目 + 阶段结果 + 验收记录 + 材料计划/领用/退料（库存与修复进度一致） */
     @GetMapping("/{id}")
     public ApiResponse<Map<String, Object>> get(@PathVariable Long id) {
         RepairProject project = repairService.requireProject(id);
@@ -84,6 +88,9 @@ public class RepairController {
         detail.put("project", project);
         detail.put("stages", stages);
         detail.put("acceptance", acceptance);
+        detail.put("materialPlans", materialService.listPlansByProject(id));
+        detail.put("materialIssues", materialService.listIssuesByProject(id));
+        detail.put("materialReturns", materialService.listReturnsByProject(id));
         return ApiResponse.ok(detail);
     }
 }

@@ -75,4 +75,39 @@ public final class MuseumConstants {
     public static final String ROLE_RESTORER = "RESTORER";
     public static final String ROLE_CURATOR = "CURATOR";
     public static final String ROLE_VIEWER = "VIEWER";
+
+    // --------------------------------------------------------------------
+    // museum-3 修复材料批号与用量核算
+    // --------------------------------------------------------------------
+
+    /** 材料类别：颜料 / 黏合剂 / 保护剂 */
+    public static final String MATERIAL_PIGMENT = "PIGMENT";
+    public static final String MATERIAL_ADHESIVE = "ADHESIVE";
+    public static final String MATERIAL_PROTECTANT = "PROTECTANT";
+
+    /** 材料批号库存状态：在库可用 / 已耗尽 / 已过期 */
+    public static final String BATCH_ACTIVE = "ACTIVE";
+    public static final String BATCH_EXHAUSTED = "EXHAUSTED";
+    public static final String BATCH_EXPIRED = "EXPIRED";
+
+    /** 领用单状态：已领用 / 已退料（部分或全部） */
+    public static final String ISSUE_ISSUED = "ISSUED";
+    public static final String ISSUE_RETURNED = "RETURNED";
+
+    /** 复核原因 / 状态：用量差异超阈值；待复核 / 已核实 / 已调整 */
+    public static final String REVIEW_DAT_DIFF = "DAT_DIFF";
+    public static final String REVIEW_PENDING = "PENDING";
+    public static final String REVIEW_CONFIRMED = "CONFIRMED";
+    public static final String REVIEW_ADJUSTED = "ADJUSTED";
+
+    /** 台账流水动作：材料入库 / 领用 / 登记实际用量 / 退料 / 触发复核 / 复核处理 */
+    public static final String ACTION_MATERIAL_INBOUND = "MATERIAL_INBOUND";
+    public static final String ACTION_MATERIAL_ISSUE = "MATERIAL_ISSUE";
+    public static final String ACTION_MATERIAL_USED = "MATERIAL_USED";
+    public static final String ACTION_MATERIAL_RETURN = "MATERIAL_RETURN";
+    public static final String ACTION_MATERIAL_REVIEW = "MATERIAL_REVIEW";
+    public static final String ACTION_MATERIAL_REVIEW_HANDLE = "MATERIAL_REVIEW_HANDLE";
+
+    /** 材料台账事件使用的占位文物 id（无具体文物归属，如入库） */
+    public static final long MATERIAL_GLOBAL_SCOPE = 0L;
 }

@@ -101,6 +101,52 @@
 批量上传响应示例（节选）：`versionNo`、`successCount/failedCount`，以及与文件同序的 `items`，
 每项含 `index/fileName/viewType/success/duplicateFile/imageId/fileId/reason`。
 
+## 修复材料批号与用量核算（museum-3）
+
+颜料（PIGMENT）、黏合剂（ADHESIVE）、保护剂（PROTECTANT）按**批号**入库；修复工单领用
+材料时记录用量、使用部位与操作者；计划用量与实际用量差异超阈值触发复核。
+
+### 核算规则
+
+- **按批号入库**：批号全库唯一（含已耗尽/已过期记录），记录入库总量、可用库存、生产/到期日。
+  库存只随领用扣减、退料回补；耗尽置 `EXHAUSTED`、到期置 `EXPIRED`，均不删行。
+- **领用三要素**：仅 `REPAIRING` 项目可领用；领用采用条件扣减（库存足够才出库，并发不超卖），
+  同事务写领用单并扣库存，**库存与修复进度保持一致**。领用单记录用量、使用部位、操作者（必填），
+  并冗余材料名称/批号快照——**之后材料批号变更（新批入库、旧批耗尽）不影响历史工单**。
+- **过期不能领用**：到期日早于当前日期的批次直接拒绝（含入库即到期与库存中到期两种情况）。
+- **退料关联原单**：退料必须指定原领用单；一张领用单最多退一次，退料量不超过
+  「领用量 − 已退料 − 已实际使用」的净余量；退料同事务回补原批号库存。
+- **用量差异复核**：登记实际用量后即时核算「该计划下累计实际用量 vs 计划用量」，
+  偏差百分比**严格超过**阈值（计划可自带阈值，否则用系统默认 10%，
+  由 `museum.material.review-threshold-percent` 配置）即生成复核任务并写台账。
+- **定时任务重启幂等**：`MaterialReviewScanner` 默认每天 08:00
+  （`museum.material.review-scan-cron` 可配）兜底扫描全部材料计划。复核表对
+  `(plan_id, reason)` 加唯一约束，**重启后重扫不会多写复核记录**；复核任务冗余领用操作者，
+  重新组装也**不丢操作者**。复核结论 `CONFIRMED`（核实无误）/ `ADJUSTED`（已调整）。
+
+### 材料接口
+
+| 方法与路径 | 作用 |
+| --- | --- |
+| `POST /api/materials/inbound` | 颜料/黏合剂/保护剂按批号入库（批号唯一、带到期日） |
+| `GET  /api/materials/batches?category=&status=` | 批号库存列表（可按类别/状态过滤） |
+| `GET  /api/materials/batches/{id}` | 批号库存详情 |
+| `POST /api/repair-projects/{id}/material-plans` | 工单材料计划（计划用量、可选差异阈值） |
+| `GET  /api/repair-projects/{id}/material-plans` | 项目材料计划列表 |
+| `POST /api/repair-projects/{id}/material-issues` | 工单领用：用量/部位/操作者，过期与库存不足被拒 |
+| `GET  /api/repair-projects/{id}/material-issues` | 项目领用记录 |
+| `GET  /api/material-issues/{id}` | 领用单详情（含关联退料单） |
+| `POST /api/material-issues/{id}/usage` | 登记实际用量，即时触发差异核算 |
+| `POST /api/material-returns` | 退料（必须带原领用单 issueId，回补库存） |
+| `GET  /api/repair-projects/{id}/material-returns` | 项目退料记录 |
+| `GET  /api/material-reviews?status=` | 复核任务列表 |
+| `POST /api/material-reviews/{id}/handle` | 处理复核（CONFIRMED/ADJUSTED） |
+| `POST /api/material-reviews/scan` | 手动触发一次差异扫描（与定时任务同一套幂等逻辑） |
+
+材料入库/领用/实际用量/退料/触发复核/复核处理均写 `t_relic_ledger` 台账流水
+（入库无具体文物归属，用全局占位 id）。修复项目详情 `GET /api/repair-projects/{id}`
+同时聚合材料计划、领用与退料，便于把材料台账与修复进度一起核对。
+
 ### 起步幂等
 
 `POST /api/bootstrap` 首次调用播种样本 `WW-2026-0001`（入藏 `RU-2026-0001` → 借出/归还
@@ -121,3 +167,8 @@ mvn test
 - `ImageArchiveTest`：四视角批次归档；分辨率/拍摄时间/摄影者/视角逐张返回失败原因；
   同文件重复上传磁盘仅一份；不同修复阶段形成新版本、同阶段补拍沿用版本；
   作废不删原文件；修复师取原件、保管员/访客取脱敏副本；权限收紧时上传停止且已确认版本保留。
+- `MaterialAccountingTest`：三类材料按批号入库（批号唯一）；领用记录用量/部位/操作者、
+  条件扣减库存；过期与库存不足不能领用；退料必须关联原领用单、一单一退且不超净余量、
+  回补库存；计划 vs 实际偏差超阈值触发复核（临界 4% 不触发、20% 触发）；
+  材料批号变更不影响历史工单快照；定时扫描连续两轮（模拟重启）不新增复核记录且不丢操作者；
+  项目闭环后不能再做材料计划。

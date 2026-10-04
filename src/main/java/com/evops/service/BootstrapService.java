@@ -5,12 +5,19 @@ import com.evops.dto.AcceptRequest;
 import com.evops.dto.BootstrapResult;
 import com.evops.dto.IntakeRequest;
 import com.evops.dto.LoanRequest;
+import com.evops.dto.MaterialCreateRequest;
+import com.evops.dto.MaterialInboundRequest;
+import com.evops.dto.MaterialReturnRequest;
+import com.evops.dto.MaterialUsageRequest;
 import com.evops.dto.PhotoDto;
 import com.evops.dto.ProjectCreateRequest;
 import com.evops.dto.RelicCreateRequest;
 import com.evops.dto.ReturnRequest;
 import com.evops.dto.StageRequest;
+import com.evops.dto.UsageLineRequest;
 import com.evops.entity.BootstrapLock;
+import com.evops.entity.MaterialReview;
+import com.evops.entity.MaterialUsage;
 import com.evops.entity.Relic;
 import com.evops.entity.RelicIntake;
 import com.evops.entity.RelicLoan;
@@ -43,11 +50,22 @@ public class BootstrapService {
     static final String SAMPLE_LOAN_NO = "LO-2026-0001";
     static final String SAMPLE_PROJECT_NO = "RP-2026-0001";
 
+    static final String SAMPLE_PIGMENT_NO = "M-2026-0001";
+    static final String SAMPLE_ADHESIVE_NO = "M-2026-0002";
+    static final String SAMPLE_PROTECTANT_NO = "M-2026-0003";
+    static final String SAMPLE_BATCH_PIGMENT = "B-2026-0001";
+    static final String SAMPLE_BATCH_ADHESIVE = "B-2026-0002";
+    static final String SAMPLE_BATCH_PROTECTANT = "B-2026-0003";
+    static final String SAMPLE_USAGE_NO = "MU-2026-0001";
+    static final String SAMPLE_RETURN_NO = "MR-2026-0001";
+
     private final BootstrapLockMapper lockMapper;
     private final RelicService relicService;
     private final IntakeService intakeService;
     private final LoanService loanService;
     private final RepairService repairService;
+    private final MaterialAccountingService materialService;
+    private final MaterialReviewScheduler reviewScheduler;
     private final TransactionTemplate transactionTemplate;
 
     public BootstrapService(BootstrapLockMapper lockMapper,
@@ -55,12 +73,16 @@ public class BootstrapService {
                             IntakeService intakeService,
                             LoanService loanService,
                             RepairService repairService,
+                            MaterialAccountingService materialService,
+                            MaterialReviewScheduler reviewScheduler,
                             PlatformTransactionManager transactionManager) {
         this.lockMapper = lockMapper;
         this.relicService = relicService;
         this.intakeService = intakeService;
         this.loanService = loanService;
         this.repairService = repairService;
+        this.materialService = materialService;
+        this.reviewScheduler = reviewScheduler;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
@@ -158,6 +180,9 @@ public class BootstrapService {
         // 5. 开工、阶段结果、完成、验收
         repairService.startRepair(project.getId());
 
+        // 5.1 修复材料：颜料/黏合剂/保护剂按批号入库 -> 工单领用 -> 差异复核 -> 退料
+        seedMaterialAccounting(relic, project, now);
+
         StageRequest stage1 = new StageRequest();
         stage1.setStageName("清洗除锈");
         stage1.setStageResult("机械法配合低浓度乙醇清除表面硬结物，裸露基体做缓释处理。");
@@ -188,6 +213,80 @@ public class BootstrapService {
         return newLock;
     }
 
+    private void seedMaterialAccounting(Relic relic, RepairProject project, LocalDateTime now) {
+        // 三类材料目录：颜料 / 黏合剂 / 保护剂
+        seedMaterial(SAMPLE_PIGMENT_NO, "矿物颜料·石青", MuseumConstants.MATERIAL_PIGMENT, "g", "传统矿物颜料");
+        seedMaterial(SAMPLE_ADHESIVE_NO, "可逆黏合剂·B72", MuseumConstants.MATERIAL_ADHESIVE, "ml", "乙酸乙酯体系");
+        seedMaterial(SAMPLE_PROTECTANT_NO, "封护保护剂·丙烯酸树脂", MuseumConstants.MATERIAL_PROTECTANT, "ml", "表面缓蚀封护");
+
+        // 按批号入库（同批号重复入库累加库存）；起步批号均在有效期内
+        seedInbound(SAMPLE_PIGMENT_NO, SAMPLE_BATCH_PIGMENT, new BigDecimal("100.000"),
+                now.toLocalDate().minusDays(60), now.toLocalDate().plusDays(365), "传统材料供应站");
+        seedInbound(SAMPLE_ADHESIVE_NO, SAMPLE_BATCH_ADHESIVE, new BigDecimal("200.000"),
+                now.toLocalDate().minusDays(30), now.toLocalDate().plusDays(180), "修复材料中心");
+        seedInbound(SAMPLE_PROTECTANT_NO, SAMPLE_BATCH_PROTECTANT, new BigDecimal("500.000"),
+                now.toLocalDate().minusDays(15), now.toLocalDate().plusDays(30), "修复材料中心");
+
+        // 工单领用：记录批号、计划/实际用量、部位、操作者；黏合剂行实际用量超阈值
+        MaterialUsageRequest usageReq = new MaterialUsageRequest();
+        usageReq.setUsageNo(SAMPLE_USAGE_NO);
+        usageReq.setProjectId(project.getId());
+        usageReq.setNote("起步样本：腹部裂隙矫形补配与口沿补铸用料");
+        java.util.List<UsageLineRequest> lines = new java.util.ArrayList<>();
+        lines.add(usageLine(SAMPLE_BATCH_PIGMENT, "10.000", "11.000", "口沿补配随色", "修复师甲"));
+        lines.add(usageLine(SAMPLE_BATCH_ADHESIVE, "50.000", "80.000", "腹部裂隙接口", "修复师甲"));
+        lines.add(usageLine(SAMPLE_BATCH_PROTECTANT, "100.000", "100.000", "整体表面封护", "修复师乙"));
+        usageReq.setLines(lines);
+        MaterialUsage usage = materialService.issue(usageReq);
+
+        // 模拟定时任务重启后的补扫：差异行进复核（黏合剂行偏差 60%，超过 20% 阈值）
+        reviewScheduler.scanOnce();
+
+        // 退料关联原领用单：颜料行部分退回 5g，库存加回原批号
+        MaterialReturnRequest returnReq = new MaterialReturnRequest();
+        returnReq.setReturnNo(SAMPLE_RETURN_NO);
+        returnReq.setUsageId(usage.getId());
+        returnReq.setLineId(materialService.listLines(usage.getId()).get(0).getId());
+        returnReq.setReturnQty(new BigDecimal("5.000"));
+        returnReq.setReason("口沿随色余量退回");
+        returnReq.setReturnedBy("修复师甲");
+        materialService.returnMaterial(returnReq);
+    }
+
+    private void seedMaterial(String no, String name, String category, String unit, String spec) {
+        MaterialCreateRequest req = new MaterialCreateRequest();
+        req.setMaterialNo(no);
+        req.setName(name);
+        req.setCategory(category);
+        req.setUnit(unit);
+        req.setSpec(spec);
+        materialService.createMaterial(req);
+    }
+
+    private void seedInbound(String materialNo, String batchNo, BigDecimal qty,
+                             java.time.LocalDate produced, java.time.LocalDate expire, String supplier) {
+        MaterialInboundRequest req = new MaterialInboundRequest();
+        req.setMaterialNo(materialNo);
+        req.setBatchNo(batchNo);
+        req.setQty(qty);
+        req.setProducedDate(produced);
+        req.setExpireDate(expire);
+        req.setSupplier(supplier);
+        req.setInboundBy("库管员");
+        materialService.inbound(req);
+    }
+
+    private UsageLineRequest usageLine(String batchNo, String plan, String actual,
+                                       String part, String operator) {
+        UsageLineRequest line = new UsageLineRequest();
+        line.setBatchNo(batchNo);
+        line.setPlanQty(new BigDecimal(plan));
+        line.setActualQty(new BigDecimal(actual));
+        line.setApplyPart(part);
+        line.setOperator(operator);
+        return line;
+    }
+
     private BootstrapResult toResult(boolean created, BootstrapLock lock) {
         Relic relic = relicService.requireRelic(lock.getRelicId());
         RepairProject project = repairService.requireProject(lock.getProjectId());
@@ -195,6 +294,18 @@ public class BootstrapService {
         java.util.List<RelicLoan> loans = loanService.listByRelic(relic.getId());
         java.util.List<RepairStage> stages = repairService.listStages(project.getId());
         RepairAcceptance acceptance = repairService.getAcceptance(project.getId());
+        java.util.List<MaterialUsage> usages = materialService.listUsagesByProject(project.getId());
+        MaterialUsage sampleUsage = usages.stream()
+                .filter(u -> SAMPLE_USAGE_NO.equals(u.getUsageNo()))
+                .findFirst().orElse(usages.isEmpty() ? null : usages.get(0));
+        java.util.List<com.evops.entity.MaterialUsageLine> usageLines =
+                sampleUsage == null ? java.util.Collections.emptyList()
+                        : materialService.listLines(sampleUsage.getId());
+        java.util.List<MaterialReview> reviews = materialService.listReviews(null);
+        long openReviewCount = reviews.stream()
+                .filter(r -> MuseumConstants.REVIEW_OPEN.equals(r.getStatus())
+                        && project.getId().equals(r.getProjectId()))
+                .count();
 
         BootstrapResult result = new BootstrapResult();
         result.setCreated(created);
@@ -214,6 +325,10 @@ public class BootstrapService {
         result.setProjectNo(project.getProjectNo());
         result.setStageCount(stages.size());
         result.setAcceptanceId(acceptance == null ? null : acceptance.getId());
+        result.setMaterialLineCount(usageLines.size());
+        result.setOpenReviewCount((int) openReviewCount);
+        result.setUsageId(sampleUsage == null ? null : sampleUsage.getId());
+        result.setUsageNo(sampleUsage == null ? null : sampleUsage.getUsageNo());
         return result;
     }
 }

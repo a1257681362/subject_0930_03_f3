@@ -53,6 +53,10 @@ class BootstrapApiTest {
         assertFullChain(firstData);
         long relicId = firstData.get("relicId").asLong();
         long projectId = firstData.get("projectId").asLong();
+        // 修复材料核算样本：三类材料领用 3 行、1 条超阈值差异待复核、1 张退料单
+        assertEquals(3, firstData.get("materialLineCount").asInt());
+        assertEquals(1, firstData.get("openReviewCount").asInt());
+        assertEquals("MU-2026-0001", firstData.get("usageNo").asText());
 
         // 第二次起步：created=false，主键/编号完全一致，不产生第二条结果
         JsonNode second = postBootstrap();
@@ -88,7 +92,9 @@ class BootstrapApiTest {
         dossier.get("ledger").forEach(e -> actions.add(e.get("action").asText()));
         assertEquals(Arrays.asList(
                 "INTAKE", "LOAN_OUT", "RETURN",
-                "REPAIR_START", "REPAIR_STAGE", "REPAIR_STAGE",
+                "REPAIR_START",
+                "MATERIAL_ISSUE", "MATERIAL_REVIEW", "MATERIAL_RETURN",
+                "REPAIR_STAGE", "REPAIR_STAGE",
                 "REPAIR_FINISH", "ACCEPT"), actions);
     }
 

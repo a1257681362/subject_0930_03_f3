@@ -23,4 +23,10 @@ public class BootstrapResult {
     private String projectNo;
     private Integer stageCount;
     private Long acceptanceId;
+
+    /** 修复材料核算（museum-3）：样本领用单行数、待复核数、样本领用单 */
+    private Integer materialLineCount;
+    private Integer openReviewCount;
+    private Long usageId;
+    private String usageNo;
 }
